@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	HeaderParameterAuthorization      = "Authorization"
 	Admin                             = "admin"
 	BasicTokenType                    = "Basic"
 	BearerTokenType                   = "Bearer"
@@ -22,6 +23,10 @@ const (
 	ForbiddenRequestCode              = 1003001
 	ForbiddenRequestExplanation       = "Forbidden request. Check your privilege!"
 	JWTPayload                        = "jwtPayload"
+	TenantPlaceholder                 = "{tenantId}"
+	UserPlaceholder                   = "{userId}"
+	ResourceSeparator                 = ":"
+	StarValue                         = "*"
 )
 
 type AuthResponse struct {
@@ -32,14 +37,15 @@ type AuthResponse struct {
 //Auth authenticate and authorize the request
 func Auth(requiredPermission string, requiredAction int) restful.FilterFunction {
 	return func(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
-		rawToken := req.HeaderParameter("Authorization")
+		rawToken := req.HeaderParameter(HeaderParameterAuthorization)
 		splittedToken := strings.Fields(rawToken)
 
+		responseBodyUnauthenticated := &AuthResponse{
+			Code:        UnauthenticatedRequestCode,
+			Explanation: UnauthenticatedRequestExplanation,
+		}
+
 		if len(splittedToken) != 2 {
-			responseBodyUnauthenticated := &AuthResponse{
-				Code:        UnauthenticatedRequestCode,
-				Explanation: UnauthenticatedRequestExplanation,
-			}
 			_ = resp.WriteHeaderAndJson(
 				http.StatusUnauthorized,
 				responseBodyUnauthenticated,
@@ -49,21 +55,12 @@ func Auth(requiredPermission string, requiredAction int) restful.FilterFunction 
 		}
 
 		if splittedToken[0] != BearerTokenType {
-			responseBodyUnauthenticated := &AuthResponse{
-				Code:        UnauthenticatedRequestCode,
-				Explanation: UnauthenticatedRequestExplanation,
-			}
 			_ = resp.WriteHeaderAndJson(
 				http.StatusUnauthorized,
 				responseBodyUnauthenticated,
 				restful.MIME_JSON,
 			)
 			return
-		}
-
-		responseBodyUnauthenticated := &AuthResponse{
-			Code:        UnauthenticatedRequestCode,
-			Explanation: UnauthenticatedRequestExplanation,
 		}
 
 		jwtKey := []byte(SecretKey)
@@ -82,7 +79,7 @@ func Auth(requiredPermission string, requiredAction int) restful.FilterFunction 
 			return
 		}
 
-		isExpire := expirationMatcher(claim)
+		isExpire := isExpire(claim)
 		if isExpire {
 			_ = resp.WriteHeaderAndJson(
 				http.StatusUnauthorized,
@@ -114,102 +111,54 @@ func Auth(requiredPermission string, requiredAction int) restful.FilterFunction 
 }
 
 func permissionMatcher(expectedResource string, expectedAction int, claims *claim.IdentityClaim, req *restful.Request) bool {
-	expectedResourceSplits := strings.Split(expectedResource, ":")
-	splitLen := len(expectedResourceSplits)
+	tenantID := req.PathParameter("tenantId")
+	userID := req.PathParameter("userId")
 
-	if splitLen == 2 {
-		return publicPermissionMatcher(expectedResourceSplits, expectedAction, claims, req)
-	} else if splitLen == 3 && strings.HasPrefix(expectedResource, Admin) {
-		return adminPermissionMatcher(expectedResourceSplits, expectedAction, claims, req)
+	if tenantID != "" {
+		expectedResource = strings.Replace(expectedResource, TenantPlaceholder, tenantID, 1)
 	}
 
-	expectedResourcePrefix := expectedResourceSplits[0]
-	permissionClaimMap := claims.Permissions
-	return permissionClaimMap[expectedResourcePrefix]&expectedAction > 0
+	if userID != "" {
+		expectedResource = strings.Replace(expectedResource, UserPlaceholder, userID, 1)
+	}
+
+	claimedPerms := claims.Permissions
+	return matchPermission(expectedResource, expectedAction, claimedPerms)
 
 }
 
-func adminPermissionMatcher(expectedResourceSplits []string, expectedAction int, claims *claim.IdentityClaim, req *restful.Request) bool {
-	expectedResourceParam := expectedResourceSplits[2]
-	permissionClaimMap := claims.Permissions
+//matchPermission match the permission
+//remember that resource format is param1:value1:param2:value2:resource
+//for example: tenant:*:user:*:menu or just tenant:{tenantId}:menu:*
+func matchPermission(requiredResource string, requiredAction int, claimedPerms map[string]int) bool {
 
-	expectedResourcePrefix := expectedResourceSplits[1]
-
-	if expectedResourceParam == "*" { // the form will be such *, e.g. user:*
-		for k, v := range permissionClaimMap {
-			permSplit := strings.Split(k, ":")
-			if len(permSplit) != 3 {
-				continue
-			}
-
-			if permSplit[1] == expectedResourcePrefix && v&expectedAction > 0 {
-				return true
-			}
-		}
-		return false
+	if claimedPerms[requiredResource]&requiredAction > 0 { // requred and granted perfectly match
+		return true
 	}
 
-	// else the form will be such {userId}, e.g. user:{userId}
-	for k, v := range permissionClaimMap {
-		permSplit := strings.Split(k, ":")
-		if len(permSplit) != 3 {
+	requiredResourceSubs := strings.Split(requiredResource, ResourceSeparator)
+	for claimedResource, claimedAction := range claimedPerms {
+		claimedResourceSubs := strings.Split(claimedResource, ResourceSeparator)
+		if len(claimedResourceSubs) != len(requiredResourceSubs) {
 			continue
 		}
-
-		if permSplit[1] == expectedResourcePrefix {
-			strippedPrefix := expectedResourceParam[1 : len(expectedResourceParam)-2]
-			if strippedPrefix == UserID {
-				userID := req.PathParameter(UserID)
-				return claims.UserID == userID && v&expectedAction > 0
-			}
-
-			return v&expectedAction > 0
+		if match(claimedResourceSubs, requiredResourceSubs) {
+			return requiredAction&claimedAction > 0
 		}
 	}
 	return false
 }
 
-func publicPermissionMatcher(expectedResourceSplits []string, expectedAction int, claims *claim.IdentityClaim, req *restful.Request) bool {
-	expectedResourceParam := expectedResourceSplits[1]
-	permissionClaimMap := claims.Permissions
-
-	expectedResourcePrefix := expectedResourceSplits[0]
-
-	if expectedResourceParam == "*" { // the form will be such *, e.g. user:*
-		for k, v := range permissionClaimMap {
-			permSplit := strings.Split(k, ":")
-			if len(permSplit) != 2 {
-				continue
-			}
-
-			if permSplit[0] == expectedResourcePrefix && v&expectedAction > 0 {
-				return true
-			}
-		}
-		return false
-	}
-
-	// else the form will be such {userId}, e.g. user:{userId}
-	for k, v := range permissionClaimMap {
-		permSplit := strings.Split(k, ":")
-		if len(permSplit) != 2 {
-			continue
-		}
-
-		if permSplit[0] == expectedResourcePrefix {
-			strippedPrefix := expectedResourceParam[1 : len(expectedResourceParam)-1]
-			if strippedPrefix == UserID {
-				userID := req.PathParameter(UserID)
-				return claims.UserID == userID && v&expectedAction > 0
-			}
-
-			return v&expectedAction > 0
+func match(claimedResourceSubs, requiredResourceSubs []string) bool {
+	for i, requiredResourceSub := range requiredResourceSubs {
+		if requiredResourceSub != claimedResourceSubs[i] && claimedResourceSubs[i] != StarValue && requiredResourceSub != StarValue {
+			return false
 		}
 	}
-	return false
+	return true
 }
 
-func expirationMatcher(claims *claim.IdentityClaim) bool {
+func isExpire(claims *claim.IdentityClaim) bool {
 	now := time.Now().Unix()
 	return claims.ExpiresAt <= now
 }
