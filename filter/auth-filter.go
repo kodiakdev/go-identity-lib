@@ -23,7 +23,7 @@ const (
 	ForbiddenRequestCode              = 1003001
 	ForbiddenRequestExplanation       = "Forbidden request. Check your privilege!"
 	JWTPayload                        = "jwtPayload"
-	TenantPlaceholder                 = "{tenantId}"
+	TenantPlaceholder                 = "{tenant}"
 	UserPlaceholder                   = "{userId}"
 	ResourceSeparator                 = ":"
 	StarValue                         = "*"
@@ -111,11 +111,11 @@ func Auth(requiredPermission string, requiredAction int) restful.FilterFunction 
 }
 
 func permissionMatcher(expectedResource string, expectedAction int, claims *claim.IdentityClaim, req *restful.Request) bool {
-	tenantID := req.PathParameter("tenantId")
+	tenant := req.PathParameter("tenant")
 	userID := req.PathParameter("userId")
 
-	if tenantID != "" {
-		expectedResource = strings.Replace(expectedResource, TenantPlaceholder, tenantID, 1)
+	if tenant != "" {
+		expectedResource = strings.Replace(expectedResource, TenantPlaceholder, tenant, 1)
 	}
 
 	if userID != "" {
@@ -129,7 +129,7 @@ func permissionMatcher(expectedResource string, expectedAction int, claims *clai
 
 //matchPermission match the permission
 //remember that resource format is param1:value1:param2:value2:resource
-//for example: tenant:*:user:*:menu or just tenant:{tenantId}:menu:*
+//for example: tenant:*:user:*:menu or just tenant:{tenant}:menu:*
 func matchPermission(requiredResource string, requiredAction int, claimedPerms map[string]int) bool {
 
 	if claimedPerms[requiredResource]&requiredAction > 0 { // requred and granted perfectly match
