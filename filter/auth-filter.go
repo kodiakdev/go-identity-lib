@@ -17,7 +17,6 @@ const (
 	BasicTokenType                    = "Basic"
 	BearerTokenType                   = "Bearer"
 	UserID                            = "userId"
-	SecretKey                         = "my_secret_key"
 	UnauthenticatedRequestCode        = 1002001
 	UnauthenticatedRequestExplanation = "Unauthenticated request"
 	ForbiddenRequestCode              = 1003001
@@ -29,13 +28,31 @@ const (
 	StarValue                         = "*"
 )
 
+//AuthResponse auth response model
 type AuthResponse struct {
 	Code        int    `json:"code"`
 	Explanation string `json:"explanation"`
 }
 
+//IAuthFilter contract for auth filter
+type IAuthFilter interface {
+	Auth(requiredPermission string, requiredAction int) restful.FilterFunction
+}
+
+//AuthFilter auth filter
+type AuthFilter struct {
+	secretKey string
+}
+
+//NewAuthFilter auth filter constructor
+func NewAuthFilter(secretKey string) *AuthFilter {
+	return &AuthFilter{
+		secretKey: secretKey,
+	}
+}
+
 //Auth authenticate and authorize the request
-func Auth(requiredPermission string, requiredAction int) restful.FilterFunction {
+func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) restful.FilterFunction {
 	return func(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
 		rawToken := req.HeaderParameter(HeaderParameterAuthorization)
 		splittedToken := strings.Fields(rawToken)
@@ -63,7 +80,7 @@ func Auth(requiredPermission string, requiredAction int) restful.FilterFunction 
 			return
 		}
 
-		jwtKey := []byte(SecretKey)
+		jwtKey := []byte(auth.secretKey)
 
 		claim := &claim.IdentityClaim{}
 		tkn, err := jwt.ParseWithClaims(splittedToken[1], claim, func(token *jwt.Token) (interface{}, error) {
@@ -79,7 +96,7 @@ func Auth(requiredPermission string, requiredAction int) restful.FilterFunction 
 			return
 		}
 
-		isExpire := isExpire(claim)
+		isExpire := auth.isExpire(claim)
 		if isExpire {
 			_ = resp.WriteHeaderAndJson(
 				http.StatusUnauthorized,
@@ -94,7 +111,7 @@ func Auth(requiredPermission string, requiredAction int) restful.FilterFunction 
 			Explanation: ForbiddenRequestExplanation,
 		}
 
-		isAuthorized := permissionMatcher(requiredPermission, requiredAction, claim, req)
+		isAuthorized := auth.permissionMatcher(requiredPermission, requiredAction, claim, req)
 		if !isAuthorized {
 			_ = resp.WriteHeaderAndJson(
 				http.StatusForbidden,
@@ -110,7 +127,7 @@ func Auth(requiredPermission string, requiredAction int) restful.FilterFunction 
 	}
 }
 
-func permissionMatcher(expectedResource string, expectedAction int, claims *claim.IdentityClaim, req *restful.Request) bool {
+func (auth *AuthFilter) permissionMatcher(expectedResource string, expectedAction int, claims *claim.IdentityClaim, req *restful.Request) bool {
 	tenant := req.PathParameter("tenant")
 	userID := req.PathParameter("userId")
 
@@ -123,14 +140,14 @@ func permissionMatcher(expectedResource string, expectedAction int, claims *clai
 	}
 
 	claimedPerms := claims.Permissions
-	return matchPermission(expectedResource, expectedAction, claimedPerms)
+	return auth.matchPermission(expectedResource, expectedAction, claimedPerms)
 
 }
 
 //matchPermission match the permission
 //remember that resource format is param1:value1:param2:value2:resource
 //for example: tenant:*:user:*:menu or just tenant:{tenant}:menu:*
-func matchPermission(requiredResource string, requiredAction int, claimedPerms map[string]int) bool {
+func (auth *AuthFilter) matchPermission(requiredResource string, requiredAction int, claimedPerms map[string]int) bool {
 
 	if claimedPerms[requiredResource]&requiredAction > 0 { // requred and granted perfectly match
 		return true
@@ -142,14 +159,14 @@ func matchPermission(requiredResource string, requiredAction int, claimedPerms m
 		if len(claimedResourceSubs) != len(requiredResourceSubs) {
 			continue
 		}
-		if match(claimedResourceSubs, requiredResourceSubs) {
+		if auth.match(claimedResourceSubs, requiredResourceSubs) {
 			return requiredAction&claimedAction > 0
 		}
 	}
 	return false
 }
 
-func match(claimedResourceSubs, requiredResourceSubs []string) bool {
+func (auth *AuthFilter) match(claimedResourceSubs, requiredResourceSubs []string) bool {
 	for i, requiredResourceSub := range requiredResourceSubs {
 		if requiredResourceSub != claimedResourceSubs[i] && claimedResourceSubs[i] != StarValue && requiredResourceSub != StarValue {
 			return false
@@ -158,7 +175,7 @@ func match(claimedResourceSubs, requiredResourceSubs []string) bool {
 	return true
 }
 
-func isExpire(claims *claim.IdentityClaim) bool {
+func (auth *AuthFilter) isExpire(claims *claim.IdentityClaim) bool {
 	now := time.Now().Unix()
 	return claims.ExpiresAt <= now
 }
