@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/emicklei/go-restful"
@@ -111,7 +112,9 @@ func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) rest
 			Explanation: ForbiddenRequestExplanation,
 		}
 
-		isAuthorized := auth.permissionMatcher(requiredPermission, requiredAction, claim, req)
+		requiredPermissionPlaceholderReplaced := auth.replacePlaceholders(requiredPermission, req)
+		claimedPerms := claim.Permissions
+		isAuthorized := auth.matchWithClaims(requiredPermissionPlaceholderReplaced, requiredAction, claimedPerms)
 		if !isAuthorized {
 			_ = resp.WriteHeaderAndJson(
 				http.StatusForbidden,
@@ -127,29 +130,34 @@ func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) rest
 	}
 }
 
-func (auth *AuthFilter) permissionMatcher(expectedResource string, expectedAction int, claims *claim.IdentityClaim, req *restful.Request) bool {
-	tenant := req.PathParameter("tenant")
-	userID := req.PathParameter("userId")
-
-	if tenant != "" {
-		expectedResource = strings.Replace(expectedResource, TenantPlaceholder, tenant, 1)
+//replacePlaceholders replace the placeholder from expected resource with one from request path param
+//for example: assuming the req.PathParameter(tenant) return 12345
+//the resource external:fnb:tenant:{tenant}:menu will become external:fnb:tenant:123456:menu
+func (auth *AuthFilter) replacePlaceholders(expectedResource string, req *restful.Request) string {
+	newResource := ""
+	splittedRes := strings.Split(expectedResource, ResourceSeparator)
+	for _, res := range splittedRes {
+		if strings.HasPrefix(res, "{") && strings.HasSuffix(res, "}") {
+			trimmed := strings.TrimFunc(res, func(r rune) bool {
+				return !unicode.IsLetter(r)
+			})
+			pathParam := req.PathParameter(trimmed)
+			if pathParam != "" {
+				res = pathParam
+			}
+		}
+		newResource += res + ResourceSeparator
 	}
-
-	if userID != "" {
-		expectedResource = strings.Replace(expectedResource, UserPlaceholder, userID, 1)
-	}
-
-	claimedPerms := claims.Permissions
-	return auth.matchPermission(expectedResource, expectedAction, claimedPerms)
-
+	finalTrim := strings.Trim(newResource, ResourceSeparator)
+	return finalTrim
 }
 
-//matchPermission match the permission
-//remember that resource format is param1:value1:param2:value2:resource
-//for example: tenant:*:user:*:menu or just tenant:{tenant}:menu:*
-func (auth *AuthFilter) matchPermission(requiredResource string, requiredAction int, claimedPerms map[string]int) bool {
+//matchWithClaims match the permission
+//remember that resource format is visibility:servicename:param1:value1:param2:value2
+//for example: internal:fnb:tenant:*:user:*:menu or just tenant:{tenant}:menu:*
+func (auth *AuthFilter) matchWithClaims(requiredResource string, requiredAction int, claimedPerms map[string]int) bool {
 
-	if claimedPerms[requiredResource]&requiredAction > 0 { // requred and granted perfectly match
+	if claimedPerms[requiredResource]&requiredAction > 0 { // required and granted perfectly match
 		return true
 	}
 
@@ -159,14 +167,14 @@ func (auth *AuthFilter) matchPermission(requiredResource string, requiredAction 
 		if len(claimedResourceSubs) != len(requiredResourceSubs) {
 			continue
 		}
-		if auth.match(claimedResourceSubs, requiredResourceSubs) {
+		if auth.matchOneClaim(claimedResourceSubs, requiredResourceSubs) {
 			return requiredAction&claimedAction > 0
 		}
 	}
 	return false
 }
 
-func (auth *AuthFilter) match(claimedResourceSubs, requiredResourceSubs []string) bool {
+func (auth *AuthFilter) matchOneClaim(claimedResourceSubs, requiredResourceSubs []string) bool {
 	for i, requiredResourceSub := range requiredResourceSubs {
 		if requiredResourceSub != claimedResourceSubs[i] && claimedResourceSubs[i] != StarValue && requiredResourceSub != StarValue {
 			return false
