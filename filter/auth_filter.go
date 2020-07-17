@@ -22,7 +22,6 @@ const (
 	UnauthenticatedRequestExplanation = "Unauthenticated request"
 	ForbiddenRequestCode              = 1003001
 	ForbiddenRequestExplanation       = "Forbidden request. Check your privilege!"
-	JWTPayload                        = "jwtPayload"
 	TenantPlaceholder                 = "{tenant}"
 	UserPlaceholder                   = "{userId}"
 	ResourceSeparator                 = ":"
@@ -83,8 +82,8 @@ func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) rest
 
 		jwtKey := []byte(auth.secretKey)
 
-		claim := &claim.IdentityClaim{}
-		tkn, err := jwt.ParseWithClaims(splittedToken[1], claim, func(token *jwt.Token) (interface{}, error) {
+		claimObj := &claim.IdentityClaim{}
+		tkn, err := jwt.ParseWithClaims(splittedToken[1], claimObj, func(token *jwt.Token) (interface{}, error) {
 			return jwtKey, nil
 		})
 		if err != nil || !tkn.Valid {
@@ -97,7 +96,7 @@ func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) rest
 			return
 		}
 
-		isExpire := auth.isExpire(claim)
+		isExpire := auth.isExpire(claimObj)
 		if isExpire {
 			_ = resp.WriteHeaderAndJson(
 				http.StatusUnauthorized,
@@ -113,7 +112,7 @@ func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) rest
 		}
 
 		requiredPermissionPlaceholderReplaced := auth.replacePlaceholders(requiredPermission, req)
-		claimedPerms := claim.Permissions
+		claimedPerms := claimObj.Permissions
 		isAuthorized := auth.matchWithClaims(requiredPermissionPlaceholderReplaced, requiredAction, claimedPerms)
 		if !isAuthorized {
 			_ = resp.WriteHeaderAndJson(
@@ -124,7 +123,8 @@ func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) rest
 			return
 		}
 
-		req.SetAttribute(JWTPayload, claim)
+		req.SetAttribute(claim.JWTPayload, claimObj)
+		req.SetAttribute(claim.RequesterUserID, claimObj.UserID)
 
 		chain.ProcessFilter(req, resp)
 	}
