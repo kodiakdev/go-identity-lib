@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/base64"
 	"net/http"
 	"strings"
 	"time"
@@ -18,6 +19,8 @@ const (
 	BasicTokenType                    = "Basic"
 	BearerTokenType                   = "Bearer"
 	UserID                            = "userId"
+	ClientID                          = "clientId"
+	ClientSecret                      = "clientSecret"
 	UnauthenticatedRequestCode        = 1002001
 	UnauthenticatedRequestExplanation = "Unauthenticated request"
 	ForbiddenRequestCode              = 1003001
@@ -37,6 +40,7 @@ type AuthResponse struct {
 //IAuthFilter contract for auth filter
 type IAuthFilter interface {
 	Auth(requiredPermission string, requiredAction int) restful.FilterFunction
+	BasicAuth() restful.FilterFunction
 }
 
 //AuthFilter auth filter
@@ -186,4 +190,66 @@ func (auth *AuthFilter) matchOneClaim(claimedResourceSubs, requiredResourceSubs 
 func (auth *AuthFilter) isExpire(claims *claim.IdentityClaim) bool {
 	now := time.Now().Unix()
 	return claims.ExpiresAt <= now
+}
+
+//BasicAuth perform parse and validation for basic auth, and put credential to request attribute
+//note that you still needs to validate the credential against what you have in DB. This function does not do that for you.
+func (auth *AuthFilter) BasicAuth() restful.FilterFunction {
+	return func(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
+		rawToken := req.HeaderParameter(HeaderParameterAuthorization)
+		splittedToken := strings.Fields(rawToken)
+
+		responseBodyUnauthenticated := &AuthResponse{
+			Code:        UnauthenticatedRequestCode,
+			Explanation: UnauthenticatedRequestExplanation,
+		}
+
+		if len(splittedToken) != 2 {
+			_ = resp.WriteHeaderAndJson(
+				http.StatusUnauthorized,
+				responseBodyUnauthenticated,
+				restful.MIME_JSON,
+			)
+			return
+		}
+
+		if splittedToken[0] != BasicTokenType {
+			_ = resp.WriteHeaderAndJson(
+				http.StatusUnauthorized,
+				responseBodyUnauthenticated,
+				restful.MIME_JSON,
+			)
+			return
+		}
+
+		contentBytes, err := base64.StdEncoding.DecodeString(splittedToken[1])
+		if err != nil {
+			logrus.Errorf("Failed to parse the basic auth. Error: %v", err)
+			_ = resp.WriteHeaderAndJson(
+				http.StatusUnauthorized,
+				responseBodyUnauthenticated,
+				restful.MIME_JSON,
+			)
+			return
+		}
+
+		content := string(contentBytes)
+		contents := strings.Split(content, ":")
+
+		if len(contents) < 1 || len(contents) > 2 {
+			_ = resp.WriteHeaderAndJson(
+				http.StatusUnauthorized,
+				responseBodyUnauthenticated,
+				restful.MIME_JSON,
+			)
+			return
+		}
+
+		clientID := contents[0]
+		clientSecret := contents[1]
+		req.SetAttribute(ClientID, clientID)
+		req.SetAttribute(ClientSecret, clientSecret)
+
+		chain.ProcessFilter(req, resp)
+	}
 }
