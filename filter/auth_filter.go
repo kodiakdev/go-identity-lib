@@ -94,26 +94,26 @@ func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) rest
 		tkn, err := jwt.ParseWithClaims(splittedToken[1], claimObj, func(token *jwt.Token) (interface{}, error) {
 			return jwtKey, nil
 		})
-		if err != nil || !tkn.Valid {
+		if err != nil {
+			if errVal, ok := err.(*jwt.ValidationError); ok {
+				if errVal.Errors == jwt.ValidationErrorExpired {
+					_ = resp.WriteHeaderAndJson(
+						http.StatusUnauthorized,
+						&AuthResponse{
+							Code:        ExpiredTokenCode,
+							Explanation: ExpiredTokenExplanation,
+						},
+						restful.MIME_JSON,
+					)
+					return
+				}
+			}
 			logrus.Errorf("Failed to parse claim. TokenValid? %v Error: %s", tkn.Valid, err)
 			_ = resp.WriteHeaderAndJson(
 				http.StatusUnauthorized,
 				&AuthResponse{
 					Code:        InvalidTokenCode,
 					Explanation: InvalidTokenExplanation,
-				},
-				restful.MIME_JSON,
-			)
-			return
-		}
-
-		isExpire := auth.isExpire(claimObj)
-		if isExpire {
-			_ = resp.WriteHeaderAndJson(
-				http.StatusUnauthorized,
-				&AuthResponse{
-					Code:        ExpiredTokenCode,
-					Explanation: ExpiredTokenExplanation,
 				},
 				restful.MIME_JSON,
 			)
