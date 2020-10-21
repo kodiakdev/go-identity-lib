@@ -23,6 +23,10 @@ const (
 	ClientSecret                      = "clientSecret"
 	UnauthenticatedRequestCode        = 1002001
 	UnauthenticatedRequestExplanation = "Unauthenticated request"
+	InvalidTokenCode                  = 1002002
+	InvalidTokenExplanation           = "Invalid token"
+	ExpiredTokenCode                  = 1002003
+	ExpiredTokenExplanation           = "Expired token"
 	ForbiddenRequestCode              = 1003001
 	ForbiddenRequestExplanation       = "Forbidden request. Check your privilege!"
 	TenantPlaceholder                 = "{tenant}"
@@ -94,7 +98,10 @@ func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) rest
 			logrus.Errorf("Failed to parse claim. TokenValid? %v Error: %s", tkn.Valid, err)
 			_ = resp.WriteHeaderAndJson(
 				http.StatusUnauthorized,
-				responseBodyUnauthenticated,
+				&AuthResponse{
+					Code:        InvalidTokenCode,
+					Explanation: InvalidTokenExplanation,
+				},
 				restful.MIME_JSON,
 			)
 			return
@@ -104,7 +111,10 @@ func (auth *AuthFilter) Auth(requiredPermission string, requiredAction int) rest
 		if isExpire {
 			_ = resp.WriteHeaderAndJson(
 				http.StatusUnauthorized,
-				responseBodyUnauthenticated,
+				&AuthResponse{
+					Code:        ExpiredTokenCode,
+					Explanation: ExpiredTokenExplanation,
+				},
 				restful.MIME_JSON,
 			)
 			return
@@ -227,7 +237,10 @@ func (auth *AuthFilter) BasicAuth() restful.FilterFunction {
 			logrus.Errorf("Failed to parse the basic auth. Error: %v", err)
 			_ = resp.WriteHeaderAndJson(
 				http.StatusUnauthorized,
-				responseBodyUnauthenticated,
+				&AuthResponse{
+					Code:        InvalidTokenCode,
+					Explanation: InvalidTokenExplanation,
+				},
 				restful.MIME_JSON,
 			)
 			return
